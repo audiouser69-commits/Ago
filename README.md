@@ -60,7 +60,9 @@ Controllo da tastiera (traccia di AGO armata o in monitor):
 - **Rhythm editor**: velocity, REST, TIE, modalità euclidea (colpi + rotazione).
 - **Matrice di modulazione** a 8 slot. Sorgenti: LFO 1-3 (sec o beat, 8 forme compreso PATT, probabilità), MOD 1-5 preset, Velocity/Pitch Bend/Mod Wheel/Aftertouch. Destinazioni: tutte quelle dell'NDLR, step 1-16 dei motif e CC 1-127 (con canale e porta). On/off globale e per parte.
 - **Perlin noise (NZ)**: X, Y, Zoom, Spacing, Ruff, Persistence, note pool per motif.
-- **Chord sequencer**: 5 sequenze, sezioni A/B/C da 6 step (durata, tonalità, modo, grado, tipo) e song di 8 slot con ripetizioni. Si attiva con ARM.
+- **Chord sequencer / SONG** (tab CHORD SEQ / SONG): 5 sequenze, ognuna in una di due modalità. Si attiva con ARM e parte al prossimo downbeat.
+  - **SONG a righe** (default): fino a 64 righe. Ogni riga ha grado, tipo, tonalità e modo (globali o propri), durata (da 1/4 di battuta a 8 battute) e ripetizioni x1–x16. Con **+ AGGIUNGI RIGA** si aggiunge una riga che copia l'ultima; ^ v spostano la riga, X la elimina. Esempio in F maggiore: I ×3, VII ×1, IV ×2, V ×2. La riga in riproduzione si illumina e mostra la ripetizione corrente. Con tonalità e modo globali, cambiando la tonalità in alto si traspone tutta la song.
+  - **Sezioni A/B/C** (come l'NDLR): sezioni da 6 step e song di 8 slot con ripetizioni.
 - **Rotator** e **Interval mode** come nel firmware 3.
 - **Clock**: Host (default), Interno con PLAY, oppure MIDI Clock in ingresso (Start/Stop/Continue).
 - PLAY ALL, RESYNC (riallinea i motif al prossimo downbeat), PANIC.

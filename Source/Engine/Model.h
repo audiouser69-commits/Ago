@@ -146,11 +146,27 @@ inline int* destPtr(Params& p, int d) {
 
 // ---------------------------------------------------------------- sequencer di accordi
 struct ChordStep { int dur8 = 0; int key = 0; int mode = 0; int degree = 0; int type = 0; };
+// riga della SONG: grado/tipo, tonalita' e modo (-1 = quelli globali), durata in ottavi, ripetizioni
+constexpr int kMaxSongRows = 64;
+struct SongRow { int degree = 0; int type = 0; int key = -1; int mode = -1; int dur8 = 8; int reps = 1; };
+
 struct ChordSeq {
     ChordStep sec[3][6];
     int songSec[8] = {0, 1, 0, 2, 0, 0, 0, 0};
     int songRep[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    int mode = 1;                 // 0 = sezioni A/B/C (come l'NDLR), 1 = SONG a righe
+    int numRows = 0;
+    SongRow rows[kMaxSongRows];
 };
+
+// durate disponibili per le righe (in ottavi) ed etichette
+constexpr int kNumRowDurs = 10;
+inline int rowDurValue(int i) { static const int v[kNumRowDurs] = {2, 4, 6, 8, 12, 16, 24, 32, 48, 64}; return v[std::clamp(i, 0, kNumRowDurs - 1)]; }
+inline const char* rowDurName(int i) {
+    static const char* n[kNumRowDurs] = {"1/4 batt.", "1/2 batt.", "3/4 batt.", "1 battuta", "1.5 batt.", "2 battute", "3 battute", "4 battute", "6 battute", "8 battute"};
+    return n[std::clamp(i, 0, kNumRowDurs - 1)];
+}
+inline int rowDurIndex(int dur8) { for (int i = 0; i < kNumRowDurs; ++i) if (rowDurValue(i) == dur8) return i; return 3; }
 
 // ---------------------------------------------------------------- configurazione (non automatizzabile)
 struct Config {
@@ -235,6 +251,10 @@ inline void loadFactory(Config& c) {
         s.songSec[0] = 0; s.songRep[0] = 2;
         s.songSec[1] = 1; s.songRep[1] = 1;
         s.songSec[2] = 0; s.songRep[2] = 1;
+        // SONG di esempio: I x3, VII x1, IV x2, V x2 (1 battuta ciascuna, tonalita' globale)
+        const int dg[4] = {0, 6, 3, 4}, rp[4] = {3, 1, 2, 2};
+        s.numRows = 4;
+        for (int i = 0; i < 4; ++i) { s.rows[i] = SongRow(); s.rows[i].degree = dg[i]; s.rows[i].reps = rp[i]; }
     }
 }
 

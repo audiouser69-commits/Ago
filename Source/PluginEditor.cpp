@@ -703,9 +703,139 @@ private:
 };
 
 // ---------- sequencer di accordi
+// ---------- SONG a righe (progressione di accordi)
+class SongRowsView : public juce::Component {
+public:
+    std::function<void()> onStructureChange;   // righe aggiunte/tolte/spostate
+    explicit SongRowsView(AgoEditor& e) : ed(e) {}
+    ChordSeq& seq() { return ed.cfg.seqs[juce::jlimit(0, 4, ed.cfg.activeSeq)]; }
+    static constexpr int rowH = 30;
+
+    void rebuild() {
+        rows.clear();
+        const int n = juce::jlimit(0, kMaxSongRows, seq().numRows);
+        for (int i = 0; i < n; ++i) addAndMakeVisible(rows.add(new Row(*this, i)));
+        setSize(juce::jmax(100, getWidth()), juce::jmax(rowH, n * rowH + 4));
+        resized();
+        updateValues();
+    }
+    void updateValues() { for (auto* r : rows) r->load(); }
+    void tickUi() {
+        const int playing = ed.snap.seqPlaying && seq().mode == 1 ? ed.snap.seqStep : -1;
+        for (auto* r : rows) r->setPlaying(r->idx == playing ? ed.snap.seqRep : -1);
+        for (auto* r : rows) r->updateChordName();
+    }
+    void resized() override { for (auto* r : rows) r->setBounds(0, r->idx * rowH, getWidth(), rowH); }
+
+    void addRow() {
+        auto& q = seq();
+        if (q.numRows >= kMaxSongRows) return;
+        SongRow nr = q.numRows > 0 ? q.rows[q.numRows - 1] : SongRow();
+        q.rows[q.numRows++] = nr;
+        ed.pushConfig();
+        rebuild();
+        if (onStructureChange) onStructureChange();
+    }
+    void removeRow(int i) {
+        auto& q = seq();
+        for (int k = i; k < q.numRows - 1; ++k) q.rows[k] = q.rows[k + 1];
+        q.numRows = juce::jmax(0, q.numRows - 1);
+        ed.pushConfig();
+        juce::MessageManager::callAsync([sp = juce::Component::SafePointer<SongRowsView>(this)] { if (sp) { sp->rebuild(); if (sp->onStructureChange) sp->onStructureChange(); } });
+    }
+    void moveRow(int i, int d) {
+        auto& q = seq();
+        int j = i + d;
+        if (j < 0 || j >= q.numRows) return;
+        std::swap(q.rows[i], q.rows[j]);
+        ed.pushConfig();
+        updateValues();
+    }
+
+private:
+    struct Row : public juce::Component {
+        Row(SongRowsView& o, int i) : owner(o), idx(i) {
+            juce::StringArray degs, types, keys { "Tonalita' globale" }, modes { "Modo globale" }, durs, reps;
+            static const char* r[7] = {"I","II","III","IV","V","VI","VII"};
+            for (int k = 0; k < 7; ++k) { degs.add(r[k]); types.add(chordTypeName(k)); }
+            for (int k = 0; k < 12; ++k) keys.add(keyNameCircle(k));
+            for (int k = 0; k < kNumModes; ++k) modes.add(modeName(k));
+            for (int k = 0; k < kNumRowDurs; ++k) durs.add(rowDurName(k));
+            for (int k = 1; k <= 16; ++k) reps.add("x" + juce::String(k));
+            fillCombo(deg, degs); fillCombo(type, types); fillCombo(key, keys); fillCombo(mode, modes); fillCombo(dur, durs); fillCombo(rep, reps);
+            for (auto* c : { &deg, &type, &key, &mode, &dur, &rep }) { addAndMakeVisible(c); c->onChange = [this] { store(); }; }
+            for (auto* b : { &up, &down, &del }) addAndMakeVisible(b);
+            del.setColour(juce::TextButton::buttonColourId, col::mod.withAlpha(0.3f));
+            up.onClick = [this] { owner.moveRow(idx, -1); };
+            down.onClick = [this] { owner.moveRow(idx, 1); };
+            del.onClick = [this] { owner.removeRow(idx); };
+        }
+        void load() {
+            const auto& r = owner.seq().rows[idx];
+            deg.setSelectedId(r.degree + 1, juce::dontSendNotification);
+            type.setSelectedId(r.type + 1, juce::dontSendNotification);
+            key.setSelectedId(r.key + 2, juce::dontSendNotification);
+            mode.setSelectedId(r.mode + 2, juce::dontSendNotification);
+            dur.setSelectedId(rowDurIndex(r.dur8) + 1, juce::dontSendNotification);
+            rep.setSelectedId(juce::jlimit(1, 16, r.reps), juce::dontSendNotification);
+            updateChordName();
+        }
+        void store() {
+            auto& r = owner.seq().rows[idx];
+            r.degree = deg.getSelectedId() - 1; r.type = type.getSelectedId() - 1;
+            r.key = key.getSelectedId() - 2; r.mode = mode.getSelectedId() - 2;
+            r.dur8 = rowDurValue(dur.getSelectedId() - 1); r.reps = rep.getSelectedId();
+            owner.ed.pushConfig();
+            updateChordName();
+        }
+        void updateChordName() {
+            const auto& r = owner.seq().rows[idx];
+            const int gk = AgoProcessor::paramValue(owner.ed.proc.apvts, "key");
+            const int gm = AgoProcessor::paramValue(owner.ed.proc.apvts, "mode");
+            Chord c = buildChord(r.key < 0 ? gk : r.key, r.mode < 0 ? gm : r.mode, r.degree, r.type);
+            juce::String t = juce::String(romanFor(c)) + "  " + pcName(c.rootPc) + " " + chordTypeName(c.type);
+            if (t != chordName) { chordName = t; repaint(); }
+        }
+        void setPlaying(int repIdx) { if (repIdx != playRep) { playRep = repIdx; repaint(); } }
+        void paint(juce::Graphics& g) override {
+            auto b = getLocalBounds().reduced(0, 1).toFloat();
+            g.setColour(playRep >= 0 ? col::m1.withAlpha(0.28f) : (idx % 2 ? col::panel2.withAlpha(0.5f) : col::panel));
+            g.fillRoundedRectangle(b, 4.0f);
+            g.setColour(col::dim); g.setFont(juce::Font(12.0f, juce::Font::bold));
+            g.drawText(juce::String(idx + 1), getLocalBounds().withWidth(30), juce::Justification::centred);
+            g.setColour(col::m1); g.setFont(juce::Font(13.0f, juce::Font::bold));
+            g.drawText(chordName, nameArea, juce::Justification::centredLeft);
+            if (playRep >= 0) {
+                g.setColour(col::text); g.setFont(11.0f);
+                g.drawText(juce::String(playRep + 1) + "/" + juce::String(owner.seq().rows[idx].reps), nameArea, juce::Justification::centredRight);
+            }
+        }
+        void resized() override {
+            auto r = getLocalBounds().reduced(2, 3);
+            r.removeFromLeft(30);
+            deg.setBounds(r.removeFromLeft(62)); r.removeFromLeft(4);
+            type.setBounds(r.removeFromLeft(78)); r.removeFromLeft(4);
+            key.setBounds(r.removeFromLeft(130)); r.removeFromLeft(4);
+            mode.setBounds(r.removeFromLeft(120)); r.removeFromLeft(4);
+            dur.setBounds(r.removeFromLeft(100)); r.removeFromLeft(4);
+            rep.setBounds(r.removeFromLeft(58)); r.removeFromLeft(10);
+            del.setBounds(r.removeFromRight(28)); r.removeFromRight(4);
+            down.setBounds(r.removeFromRight(28)); r.removeFromRight(2);
+            up.setBounds(r.removeFromRight(28)); r.removeFromRight(10);
+            nameArea = r;
+        }
+        SongRowsView& owner; int idx;
+        juce::ComboBox deg, type, key, mode, dur, rep;
+        juce::TextButton up { "^" }, down { "v" }, del { "X" };
+        juce::String chordName; int playRep = -1; juce::Rectangle<int> nameArea;
+    };
+    AgoEditor& ed;
+    juce::OwnedArray<Row> rows;
+};
+
 class ChordSeqPage : public Page {
 public:
-    explicit ChordSeqPage(AgoEditor& e) : Page(e), arm(e.proc, "seqArm", "ARM", col::m1) {
+    explicit ChordSeqPage(AgoEditor& e) : Page(e), arm(e.proc, "seqArm", "ARM", col::m1), rowsView(e) {
         juce::StringArray keys, modes, degs, types, durs;
         for (int i = 0; i < 12; ++i) keys.add(keyNameCircle(i));
         for (int i = 0; i < kNumModes; ++i) modes.add(modeName(i));
@@ -730,7 +860,26 @@ public:
         for (auto* t : { "A", "B", "C" }) mkLabel(*this, labels, juce::String("SEZIONE ") + t, 12.0f, col::text);
         mkLabel(*this, labels, "SONG", 12.0f, col::text);
         mkLabel(*this, labels, "Durata in quarti (passo 1/8). Step vuoti (--) ignorati. ARM avvia la sequenza al prossimo downbeat, a trasporto in corsa.", 11.0f);
+        mkLabel(*this, labels, "Ogni riga: accordo per la durata, ripetuto xN, poi la successiva; a fine lista ricomincia. Tonalita'/modo globale = quelli in alto (traspongono tutta la song).", 11.0f);
+        mkLabel(*this, labels, "", 10.0f);   // area intestazioni (disegnate in paint)
+        for (auto* b : { &modeSec, &modeSong }) { b->setClickingTogglesState(false); b->setColour(juce::TextButton::buttonOnColourId, col::blue); addAndMakeVisible(b); }
+        modeSec.onClick = [this] { seq().mode = 0; ed.pushConfig(); refresh(); };
+        modeSong.onClick = [this] { seq().mode = 1; ed.pushConfig(); refresh(); };
+        addRowBtn.setColour(juce::TextButton::buttonColourId, col::m1.withAlpha(0.35f));
+        addAndMakeVisible(addRowBtn);
+        addRowBtn.onClick = [this] { rowsView.addRow(); vp.setViewPosition(0, rowsView.getHeight()); updateTotal(); };
+        rowsView.onStructureChange = [this] { updateTotal(); };
+        vp.setViewedComponent(&rowsView, false);
+        vp.setScrollBarsShown(true, false);
+        addAndMakeVisible(vp);
+        addAndMakeVisible(totalLbl);
+        totalLbl.setFont(juce::Font(12.0f, juce::Font::bold));
+        totalLbl.setColour(juce::Label::textColourId, col::dim);
         refresh();
+    }
+    void updateTotal() {
+        int64_t e = 0; for (int i = 0; i < seq().numRows; ++i) e += (int64_t) seq().rows[i].dur8 * seq().rows[i].reps;
+        totalLbl.setText(juce::String(seq().numRows) + " righe  -  " + juce::String(e / 8.0, e % 8 ? 2 : 0) + " battute", juce::dontSendNotification);
     }
     ChordSeq& seq() { return ed.cfg.seqs[juce::jlimit(0, 4, ed.cfg.activeSeq)]; }
     void store(int s, int i) {
@@ -741,6 +890,18 @@ public:
     }
     void refresh() override {
         slot.setSelectedId(ed.cfg.activeSeq + 1, juce::dontSendNotification);
+        const bool songMode = seq().mode == 1;
+        modeSec.setToggleState(!songMode, juce::dontSendNotification);
+        modeSong.setToggleState(songMode, juce::dontSendNotification);
+        for (int s = 0; s < 3; ++s) for (int i = 0; i < 6; ++i) for (auto* c : { &steps[s][i].dur, &steps[s][i].key, &steps[s][i].mode, &steps[s][i].deg, &steps[s][i].type }) c->setVisible(!songMode);
+        for (int j = 0; j < 8; ++j) { song[j].sec.setVisible(!songMode); song[j].rep.setVisible(!songMode); }
+        for (int k = 0; k < 5; ++k) labels[k]->setVisible(!songMode);
+        labels[5]->setVisible(songMode); labels[6]->setVisible(songMode);
+        vp.setVisible(songMode); addRowBtn.setVisible(songMode); totalLbl.setVisible(songMode);
+        rowsView.rebuild();
+        updateTotal();
+        resized();
+        repaint();
         for (int s = 0; s < 3; ++s)
             for (int i = 0; i < 6; ++i) {
                 auto& st = steps[s][i]; auto& c = seq().sec[s][i];
@@ -753,8 +914,21 @@ public:
             song[j].rep.setSelectedId(seq().songRep[j] + 1, juce::dontSendNotification);
         }
     }
-    void tick() override { if (ed.snap.seqStep != shown) { shown = ed.snap.seqStep; repaint(); } }
+    void tick() override {
+        if (seq().mode == 1) { rowsView.tickUi(); if (shown != -1) { shown = -1; repaint(); } return; }
+        if (ed.snap.seqStep != shown) { shown = ed.snap.seqStep; repaint(); }
+    }
     void paint(juce::Graphics& g) override {
+        if (seq().mode == 1) {
+            auto h = labels[6]->getBounds();
+            const int x0 = vp.getX() + 2 + 30;
+            const int xs[7] = {0, 66, 148, 282, 406, 510, 578};
+            const char* nm[7] = {"GRADO", "TIPO", "TONALITA'", "MODO", "DURATA", "RIP.", "ACCORDO"};
+            g.setColour(col::dim); g.setFont(juce::Font(10.0f, juce::Font::bold));
+            g.drawText("#", juce::Rectangle<int>(vp.getX(), h.getY(), 32, h.getHeight()), juce::Justification::centred);
+            for (int i = 0; i < 7; ++i) g.drawText(nm[i], juce::Rectangle<int>(x0 + xs[i] + 4, h.getY(), 120, h.getHeight()), juce::Justification::centredLeft);
+            return;
+        }
         if (shown >= 0) {
             auto r = steps[shown / 6][shown % 6].dur.getBounds().getUnion(steps[shown / 6][shown % 6].type.getBounds()).expanded(3, 2);
             g.setColour(col::m1.withAlpha(0.35f)); g.fillRoundedRectangle(r.toFloat(), 4.0f);
@@ -765,7 +939,20 @@ public:
         labels[4]->setBounds(r.removeFromBottom(20));
         auto top = r.removeFromTop(28);
         slot.setBounds(top.removeFromLeft(140)); top.removeFromLeft(10);
-        arm.setBounds(top.removeFromLeft(80));
+        arm.setBounds(top.removeFromLeft(80)); top.removeFromLeft(20);
+        modeSec.setBounds(top.removeFromLeft(150)); top.removeFromLeft(4);
+        modeSong.setBounds(top.removeFromLeft(150)); top.removeFromLeft(20);
+        addRowBtn.setBounds(top.removeFromLeft(150)); top.removeFromLeft(14);
+        totalLbl.setBounds(top);
+        if (seq().mode == 1) {
+            labels[5]->setBounds(getLocalBounds().reduced(10).removeFromBottom(20));
+            r.removeFromBottom(4);
+            r.removeFromTop(6);
+            labels[6]->setBounds(r.removeFromTop(16).withTrimmedLeft(4));
+            vp.setBounds(r);
+            rowsView.setSize(r.getWidth() - vp.getScrollBarThickness(), rowsView.getHeight());
+            return;
+        }
         auto songRow = r.removeFromBottom(30);
         labels[3]->setBounds(songRow.removeFromLeft(50));
         for (int j = 0; j < 8; ++j) {
@@ -793,6 +980,10 @@ public:
 private:
     juce::ComboBox slot;
     ParamToggle arm;
+    juce::TextButton modeSec { "SEZIONI A/B/C" }, modeSong { "SONG A RIGHE" }, addRowBtn { "+ AGGIUNGI RIGA" };
+    juce::Viewport vp;
+    SongRowsView rowsView;
+    juce::Label totalLbl;
     struct Step { juce::ComboBox dur, key, mode, deg, type; } steps[3][6];
     struct Song { juce::ComboBox sec, rep; } song[8];
     int shown = -1;
@@ -1043,7 +1234,7 @@ AgoEditor::AgoEditor(AgoProcessor& p)
     addPage("PATTERN", new PatternPage(*this));
     addPage("RHYTHM", new RhythmPage(*this));
     addPage("PERLIN", new PerlinPage(*this));
-    addPage("CHORD SEQ", new ChordSeqPage(*this));
+    addPage("CHORD SEQ / SONG", new ChordSeqPage(*this));
     addPage("MIDI / PORTE", new MidiPage(*this));
     addPage("ROTATOR / INTERVAL", new KeysPage(*this));
     tabs.setTabBarDepth(30);

@@ -580,6 +580,28 @@ void Engine::tick(int64_t t, std::vector<MidiEv>& out) {
         prevSeqArm = arm;
         if (seqRunning) {
             const ChordSeq& sq = cfg.seqs[std::clamp(cfg.activeSeq, 0, 4)];
+            if (sq.mode == 1) {
+                // SONG a righe: ogni riga suona dur8 ottavi per reps volte, poi la successiva; a fine lista ricomincia
+                const int nr = std::clamp(sq.numRows, 0, kMaxSongRows);
+                int64_t total = 0;
+                for (int r = 0; r < nr; ++r) total += (int64_t) std::max(1, sq.rows[r].dur8) * std::max(1, sq.rows[r].reps);
+                if (total <= 0) seqStepIdx = -1;
+                else {
+                    int64_t e = ((t - seqStart) / 48) % total, acc = 0;
+                    for (int r = 0; r < nr; ++r) {
+                        const SongRow& row = sq.rows[r];
+                        const int64_t d = std::max(1, row.dur8), len = d * std::max(1, row.reps);
+                        if (e < acc + len) {
+                            seqStepIdx = r; seqRepIdx = (int) ((e - acc) / d);
+                            seqKey = row.key < 0 ? base.key : row.key;
+                            seqMode = row.mode < 0 ? base.mode : row.mode;
+                            seqDeg = row.degree; seqType = row.type;
+                            break;
+                        }
+                        acc += len;
+                    }
+                }
+            } else {
             // lista piatta di step
             int64_t total = 0;
             for (int s = 0; s < 8; ++s) {
@@ -607,6 +629,7 @@ void Engine::tick(int64_t t, std::vector<MidiEv>& out) {
                             acc += st.dur8;
                         }
                 }
+            }
             }
         }
     }
@@ -875,6 +898,7 @@ void Engine::fillSnapshot(UiSnapshot& s) const {
     s.partRunning[P_PAD] = padRunning;
     s.partRunning[P_DRONE] = droneRunning;
     s.seqStep = seqRunning ? seqStepIdx : -1;
+    s.seqRep = seqRepIdx;
     s.seqPlaying = seqRunning;
     for (int i = 0; i < 3; ++i) s.lfo[i] = lfoVal[i];
     s.eff = eff;

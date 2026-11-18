@@ -135,11 +135,37 @@ int main() {
     {
         Engine e;
         e.base.seqArm = 1;
+        e.cfg.seqs[0].mode = 0;
         std::vector<MidiEv> out;
         e.start(0, out);
         int degAt[4];
         for (int64_t t = 0; t < 4 * 384; ++t) { e.tick(t, out); out.clear(); if (t % 384 == 10) degAt[t / 384] = e.currentChord().degree; }
         CHECK(degAt[0] == 0 && degAt[1] == 5 && degAt[2] == 3 && degAt[3] == 4, "seq accordi: %d %d %d %d\n", degAt[0], degAt[1], degAt[2], degAt[3]);
+    }
+
+    // 7b. SONG a righe: in F maggiore I x3, VII x1, IV x2, V x2, poi ricomincia
+    {
+        Engine e;
+        e.base.seqArm = 1;
+        e.base.key = 11;                          // F (circolo delle quinte)
+        std::vector<MidiEv> out;
+        e.start(0, out);
+        const int expDeg[10] = {0, 0, 0, 6, 3, 3, 4, 4, 0, 0};
+        const int expRoot[10] = {5, 5, 5, 4, 10, 10, 0, 0, 5, 5};   // F F F E Bb Bb C C F F
+        for (int64_t t = 0; t < 10 * 384; ++t) {
+            e.tick(t, out); out.clear();
+            if (t % 384 == 20) {
+                int b = (int) (t / 384);
+                Chord c = e.currentChord();
+                CHECK(c.degree == expDeg[b] && c.rootPc == expRoot[b], "song battuta %d: grado %d radice %d", b, c.degree, c.rootPc);
+            }
+        }
+        // riga con tonalita' propria: E minore (circolo 4, modo 5), grado I
+        e.cfg.seqs[0].rows[1].key = 4; e.cfg.seqs[0].rows[1].mode = 5; e.cfg.seqs[0].rows[1].degree = 0;
+        e.start(0, out); out.clear();
+        for (int64_t t = 0; t < 4 * 384; ++t) { e.tick(t, out); out.clear(); }
+        Chord c = e.currentChord();
+        CHECK(c.rootPc == 4 && chordQuality(c) == 1, "riga con tonalita' propria: atteso E minore");
     }
 
     // 8. ingresso MIDI di controllo

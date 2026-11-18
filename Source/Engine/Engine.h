@@ -24,7 +24,8 @@ struct UiSnapshot {
     int motifStep[2] = {-1, -1};     // indice nel pattern dell'ultima nota
     int motifBeat[2] = {-1, -1};     // battito del ritmo
     bool partRunning[4] = {};
-    int seqStep = -1;                // indice globale dello step del sequencer accordi (-1 = fermo)
+    int seqStep = -1;                // indice dello step (sezioni) o della riga (song); -1 = fermo
+    int seqRep = 0;                  // ripetizione corrente della riga (song)
     bool seqPlaying = false;
     int nz[2][16] = {};
     double lfo[3] = {};
@@ -120,7 +121,7 @@ private:
     bool resyncRequest = false;
 
     // sequencer accordi
-    bool seqRunning = false; int64_t seqStart = 0; int seqStepIdx = -1;
+    bool seqRunning = false; int64_t seqStart = 0; int seqStepIdx = -1; int seqRepIdx = 0;
     int seqKey = 0, seqMode = 0, seqDeg = 0, seqType = 0;
     bool prevSeqArm = false;
 
