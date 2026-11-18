@@ -422,7 +422,7 @@ void AgoProcessor::getStateInformation(juce::MemoryBlock& dest) {
     auto state = apvts.copyState();
     juce::ValueTree c("AGOCFG");
     juce::MemoryBlock mb(&cfgMaster, sizeof(Config));
-    c.setProperty("ver", 1, nullptr);
+    c.setProperty("ver", 3, nullptr);
     c.setProperty("size", (int) sizeof(Config), nullptr);
     c.setProperty("data", mb.toBase64Encoding(), nullptr);
     c.setProperty("portA", portId[1], nullptr);
@@ -439,10 +439,14 @@ void AgoProcessor::setStateInformation(const void* data, int size) {
     auto state = juce::ValueTree::fromXml(*xml);
     auto c = state.getChildWithName("AGOCFG");
     if (c.isValid()) {
+        // dalla v3 i campi nuovi si aggiungono in coda: uno stato piu' corto si copia sopra i valori di fabbrica
         juce::MemoryBlock mb;
-        if ((int) c.getProperty("size") == (int) sizeof(Config) && mb.fromBase64Encoding(c.getProperty("data").toString())
-            && mb.getSize() == sizeof(Config)) {
-            Config cf; std::memcpy(&cf, mb.getData(), sizeof(Config));
+        const int ver = (int) c.getProperty("ver", 1);
+        const int sz = (int) c.getProperty("size");
+        if (mb.fromBase64Encoding(c.getProperty("data").toString()) && (int) mb.getSize() == sz
+            && (sz == (int) sizeof(Config) || (ver >= 3 && sz > 0 && sz < (int) sizeof(Config)))) {
+            Config cf; loadFactory(cf);
+            std::memcpy(&cf, mb.getData(), (size_t) sz);
             setConfig(cf);
         }
         portId[1] = c.getProperty("portA").toString();

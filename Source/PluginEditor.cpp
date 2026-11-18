@@ -205,6 +205,12 @@ public:
             g.fillRect(b);
         }
         g.setColour(col::dim); g.setFont(10.0f);
+        if (ed.cfg.man[m].on) {
+            g.setColour(col::bg.withAlpha(0.75f)); g.fillRect(getLocalBounds().toFloat().reduced(2.0f));
+            g.setColour(c); g.setFont(juce::Font(13.0f, juce::Font::bold));
+            g.drawText("SEQUENZA MANUALE  (" + juce::String(ed.cfg.man[m].len) + " step)", getLocalBounds(), juce::Justification::centred);
+            return;
+        }
         g.drawText(juce::String(patTypeName(type)) + (p.patt >= kPatternNZ ? "  NZ" : "  P" + juce::String(p.patt + 1)), pr.toNearestInt(), juce::Justification::topLeft);
         // ritmo
         r.removeFromTop(4.0f);
@@ -639,6 +645,201 @@ private:
     juce::TextButton copyBtn { "Copia" }, useM1 { "Usa su M1" }, useM2 { "Usa su M2" }, resetBtn { "Ripristina fabbrica" };
     BeatEditor beats;
     juce::OwnedArray<juce::Label> labels;
+};
+
+// ---------- editor manuale dei Motif
+class ManualGrid : public juce::Component {
+public:
+    ManualGrid(AgoEditor& e) : ed(e) {}
+    int motif = 0;
+    std::function<void()> onEdit;
+    ManualSeq& ms() { return ed.cfg.man[motif]; }
+    static constexpr int labelW = 70, velH = 46;
+
+    juce::Rectangle<int> gridArea() const { return getLocalBounds().withTrimmedLeft(labelW).withTrimmedBottom(velH + 6); }
+    juce::Rectangle<int> velArea() const { return getLocalBounds().withTrimmedLeft(labelW).removeFromBottom(velH); }
+
+    void paint(juce::Graphics& g) override {
+        auto& m = ms();
+        const int rows = manRows(m.type);
+        const auto ga = gridArea().toFloat();
+        const float cw = ga.getWidth() / kManSteps, rh = ga.getHeight() / rows;
+        const juce::Colour c = partColour(2 + motif);
+        const auto& chord = ed.snap.chord;
+        const int pos = ed.snap.eff.m[motif].pos;
+        const int playing = (m.on && ed.snap.partRunning[2 + motif]) ? ed.snap.motifStep[motif] : -1;
+        g.setColour(col::bg); g.fillRoundedRectangle(getLocalBounds().toFloat(), 4.0f);
+        // righe: gradi -> note reali con l'armonia corrente del leader
+        for (int r = 0; r < rows; ++r) {
+            const int v = rows - r;
+            const float y = ga.getY() + r * rh;
+            const int note = calc.noteForValue(v, m.type, pos, chord);
+            const bool chordTone = pcIn(chord.pcs, note % 12);
+            const bool root = note % 12 == chord.rootPc;
+            g.setColour(root ? col::panel2.brighter(0.08f) : (r % 2 ? col::panel : col::panel2.withAlpha(0.6f)));
+            g.fillRect(ga.getX(), y, ga.getWidth(), rh);
+            g.setColour(m.type == PT_SCALE && chordTone ? col::m1 : (root ? col::text : col::dim));
+            g.setFont(juce::Font(juce::jmin(11.0f, rh), root ? juce::Font::bold : juce::Font::plain));
+            g.drawText(juce::String(v) + "  " + noteName(note), juce::Rectangle<float>(2, y, labelW - 6, rh), juce::Justification::centredRight);
+        }
+        // colonne
+        for (int i = 0; i < kManSteps; ++i) {
+            const float x = ga.getX() + i * cw;
+            const bool in = i < m.len;
+            if (i % 4 == 0) { g.setColour(col::line); g.drawVerticalLine((int) x, ga.getY(), ga.getBottom()); }
+            if (!in) { g.setColour(col::bg.withAlpha(0.65f)); g.fillRect(x, ga.getY(), cw, ga.getHeight()); }
+            if (i == playing) { g.setColour(juce::Colours::white.withAlpha(0.12f)); g.fillRect(x, ga.getY(), cw, ga.getHeight()); }
+            const int st = m.st[i];
+            if (st == MS_NOTE) {
+                const int v = juce::jlimit(1, rows, m.val[i]);
+                // durata visiva: si allunga sui tie successivi
+                int ties = 0; for (int j = i + 1; j < m.len && m.st[j] == MS_TIE; ++j) ++ties;
+                auto cell = juce::Rectangle<float>(x + 1, ga.getY() + (rows - v) * rh + 1, cw * (1 + ties) - 2, rh - 2);
+                g.setColour((i == playing ? juce::Colours::white : c).withAlpha(in ? 1.0f : 0.35f));
+                g.fillRoundedRectangle(cell, 2.0f);
+            }
+            if (st == MS_TIE && in) {
+                g.setColour(juce::Colour(0xff3fbf6f));
+                g.fillRect(x + 1, ga.getBottom() - 4, cw - 2, 3.0f);
+            }
+            // velocity
+            auto va = velArea().toFloat();
+            const float h = st == MS_NOTE ? va.getHeight() * m.vel[i] / 127.0f : 0.0f;
+            g.setColour(col::panel2); g.fillRect(x + 1, va.getY(), cw - 2, va.getHeight());
+            if (h > 0) { g.setColour(c.withAlpha(in ? 0.9f : 0.3f)); g.fillRect(x + 1, va.getBottom() - h, cw - 2, h); }
+            if (i % 4 == 0) { g.setColour(col::dim); g.setFont(9.0f); g.drawText(juce::String(i + 1), juce::Rectangle<float>(x, va.getY(), cw * 2, 10), juce::Justification::left); }
+        }
+        g.setColour(col::dim); g.setFont(10.0f);
+        g.drawText("VEL", juce::Rectangle<int>(2, velArea().getY(), labelW - 6, velH), juce::Justification::centredRight);
+    }
+
+    void mouseDown(const juce::MouseEvent& e) override {
+        dragMode = 0;
+        int step, v;
+        if (velArea().contains(e.getPosition())) { dragMode = 3; setVel(e); return; }
+        if (!cellAt(e, step, v)) return;
+        auto& m = ms();
+        if (e.mods.isPopupMenu() || e.mods.isCtrlDown()) {
+            m.st[step] = m.st[step] == MS_TIE ? MS_REST : MS_TIE;
+            changed(); return;
+        }
+        if (m.st[step] == MS_NOTE && m.val[step] == v) { m.st[step] = MS_REST; dragMode = 2; }
+        else { m.st[step] = MS_NOTE; m.val[step] = v; if (m.vel[step] <= 0) m.vel[step] = 100; dragMode = 1; }
+        lastStep = step;
+        changed();
+    }
+    void mouseDrag(const juce::MouseEvent& e) override {
+        if (dragMode == 3) { setVel(e); return; }
+        int step, v;
+        if (!cellAt(e, step, v) || step == lastStep) return;
+        auto& m = ms();
+        if (dragMode == 1) { m.st[step] = MS_NOTE; m.val[step] = v; if (m.vel[step] <= 0) m.vel[step] = 100; }
+        else if (dragMode == 2) m.st[step] = MS_REST;
+        lastStep = step;
+        changed();
+    }
+private:
+    bool cellAt(const juce::MouseEvent& e, int& step, int& v) {
+        const auto ga = gridArea().toFloat();
+        if (!ga.contains(e.position)) return false;
+        const int rows = manRows(ms().type);
+        step = juce::jlimit(0, kManSteps - 1, (int) ((e.position.x - ga.getX()) / (ga.getWidth() / kManSteps)));
+        v = rows - juce::jlimit(0, rows - 1, (int) ((e.position.y - ga.getY()) / (ga.getHeight() / rows)));
+        return true;
+    }
+    void setVel(const juce::MouseEvent& e) {
+        const auto va = velArea().toFloat();
+        const int step = juce::jlimit(0, kManSteps - 1, (int) ((e.position.x - va.getX()) / (va.getWidth() / kManSteps)));
+        ms().vel[step] = juce::jlimit(1, 127, juce::roundToInt((va.getBottom() - e.position.y) / va.getHeight() * 127));
+        changed();
+    }
+    void changed() { repaint(); if (onEdit) onEdit(); }
+    AgoEditor& ed;
+    Engine calc;
+    int dragMode = 0, lastStep = -1;
+};
+
+class MotifEditorPage : public Page {
+public:
+    explicit MotifEditorPage(AgoEditor& e) : Page(e), grid(e) {
+        for (int k = 0; k < 2; ++k) {
+            mBtn[k].setButtonText(k == 0 ? "MOTIF 1" : "MOTIF 2");
+            mBtn[k].setColour(juce::TextButton::buttonOnColourId, partColour(2 + k));
+            mBtn[k].onClick = [this, k] { grid.motif = k; refresh(); };
+            addAndMakeVisible(mBtn[k]);
+        }
+        manual.setButtonText("SEQUENZA MANUALE");
+        manual.setClickingTogglesState(true);
+        manual.setColour(juce::TextButton::buttonOnColourId, col::m1);
+        manual.onClick = [this] { ed.cfg.man[grid.motif].on = manual.getToggleState(); ed.pushConfig(); };
+        fillCombo(type, { "Gradi dell'ACCORDO", "Gradi della SCALA" });
+        type.onChange = [this] { auto& m = ed.cfg.man[grid.motif]; m.type = type.getSelectedId() - 1;
+                                 for (int& v : m.val) v = juce::jlimit(1, manRows(m.type), v); ed.pushConfig(); grid.repaint(); };
+        len.setSliderStyle(juce::Slider::LinearHorizontal); len.setRange(1, kManSteps, 1);
+        len.setTextBoxStyle(juce::Slider::TextBoxRight, false, 64, 18); len.setTextValueSuffix(" step");
+        len.onValueChange = [this] { ed.cfg.man[grid.motif].len = (int) len.getValue(); ed.pushConfig(); grid.repaint(); };
+        copyBtn.onClick = [this] { copyFromPattern(); };
+        clearBtn.onClick = [this] { auto& m = ed.cfg.man[grid.motif]; for (int i = 0; i < kManSteps; ++i) m.st[i] = MS_REST; ed.pushConfig(); grid.repaint(); };
+        for (juce::Component* c : { (juce::Component*) &manual, (juce::Component*) &type, (juce::Component*) &len, (juce::Component*) &copyBtn,
+                                    (juce::Component*) &clearBtn, (juce::Component*) &grid, (juce::Component*) &info })
+            addAndMakeVisible(c);
+        grid.onEdit = [this] { ed.pushConfig(); };
+        info.setFont(11.0f); info.setColour(juce::Label::textColourId, col::dim);
+        info.setText("Clic = nota (di nuovo = pausa), trascina per disegnare. Tasto destro/Ctrl+clic = TIE. Riga in basso = velocity. "
+                     "Le righe sono gradi dell'armonia del leader: cambiando accordo o tonalita' le note seguono. Tempo, Clock Div, Gate e Position dal Motif.",
+                     juce::dontSendNotification);
+        refresh();
+    }
+    void copyFromPattern() {
+        auto& m = ed.cfg.man[grid.motif];
+        const auto& p = ed.snap.eff.m[grid.motif];
+        const auto& rh = ed.cfg.rhythms[juce::jlimit(0, 39, p.rhy)];
+        const int rlen = juce::jlimit(4, 32, p.rlen), plen = juce::jlimit(1, 16, p.plen);
+        int vals[16]; int ptype;
+        if (p.patt >= kPatternNZ) { for (int i = 0; i < 16; ++i) vals[i] = ed.snap.nz[grid.motif][i]; ptype = ed.cfg.nzPool[grid.motif]; }
+        else { const auto& pt = ed.cfg.patterns[p.patt]; for (int i = 0; i < 16; ++i) vals[i] = pt.v[i]; ptype = pt.type; }
+        m.type = ptype == PT_CHORD ? PT_CHORD : PT_SCALE;
+        int nc = 0;
+        for (int i = 0; i < kManSteps; ++i) {
+            const int b = i % rlen;
+            const int rv = rh.euclid ? (Engine::euclidHit(b, rlen, rh.hits, rh.rot) ? 100 : kRest) : rh.v[b];
+            if (rv == kRest) m.st[i] = MS_REST;
+            else if (rv == kTie) m.st[i] = MS_TIE;
+            else { m.st[i] = MS_NOTE; m.val[i] = juce::jlimit(1, manRows(m.type), vals[nc++ % plen]); m.vel[i] = rv; }
+        }
+        m.len = rlen;
+        ed.pushConfig();
+        refresh();
+    }
+    void refresh() override {
+        auto& m = ed.cfg.man[grid.motif];
+        for (int k = 0; k < 2; ++k) mBtn[k].setToggleState(grid.motif == k, juce::dontSendNotification);
+        manual.setToggleState(m.on != 0, juce::dontSendNotification);
+        type.setSelectedId(m.type == PT_CHORD ? 1 : 2, juce::dontSendNotification);
+        len.setValue(m.len, juce::dontSendNotification);
+        grid.repaint();
+    }
+    void tick() override { grid.repaint(); }
+    void resized() override {
+        auto r = getLocalBounds().reduced(10);
+        info.setBounds(r.removeFromBottom(30));
+        auto top = r.removeFromTop(28);
+        mBtn[0].setBounds(top.removeFromLeft(90)); top.removeFromLeft(4);
+        mBtn[1].setBounds(top.removeFromLeft(90)); top.removeFromLeft(14);
+        manual.setBounds(top.removeFromLeft(170)); top.removeFromLeft(10);
+        type.setBounds(top.removeFromLeft(170)); top.removeFromLeft(10);
+        len.setBounds(top.removeFromLeft(230)); top.removeFromLeft(10);
+        copyBtn.setBounds(top.removeFromLeft(150)); top.removeFromLeft(6);
+        clearBtn.setBounds(top.removeFromLeft(90));
+        r.removeFromTop(6);
+        grid.setBounds(r);
+    }
+private:
+    juce::TextButton mBtn[2], manual, copyBtn { "Copia dal pattern" }, clearBtn { "Svuota" };
+    juce::ComboBox type;
+    juce::Slider len;
+    juce::Label info;
+    ManualGrid grid;
 };
 
 // ---------- Perlin
@@ -1233,6 +1434,7 @@ AgoEditor::AgoEditor(AgoProcessor& p)
     addPage("LFO", new LfoPage(*this));
     addPage("PATTERN", new PatternPage(*this));
     addPage("RHYTHM", new RhythmPage(*this));
+    addPage("MOTIF EDITOR", new MotifEditorPage(*this));
     addPage("PERLIN", new PerlinPage(*this));
     addPage("CHORD SEQ / SONG", new ChordSeqPage(*this));
     addPage("MIDI / PORTE", new MidiPage(*this));

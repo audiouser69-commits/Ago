@@ -168,6 +168,21 @@ inline const char* rowDurName(int i) {
 }
 inline int rowDurIndex(int dur8) { for (int i = 0; i < kNumRowDurs; ++i) if (rowDurValue(i) == dur8) return i; return 3; }
 
+// ---------------------------------------------------------------- sequenza manuale dei Motif
+// Ogni step: 0 = pausa, 1 = nota, 2 = tie (allunga la precedente). Il valore e' un grado dell'accordo (CHORD)
+// o della scala (SCALE) del leader: la sequenza resta sempre in tonalita' e segue i cambi d'accordo.
+constexpr int kManSteps = 32;
+enum { MS_REST = 0, MS_NOTE = 1, MS_TIE = 2 };
+struct ManualSeq {
+    int on = 0;
+    int type = PT_CHORD;
+    int len = 16;
+    int st[kManSteps] = {};
+    int val[kManSteps] = {};
+    int vel[kManSteps] = {};
+};
+inline int manRows(int type) { return type == PT_CHORD ? 15 : 22; }
+
 // ---------------------------------------------------------------- configurazione (non automatizzabile)
 struct Config {
     Pattern patterns[kNumPatterns];
@@ -185,6 +200,8 @@ struct Config {
     int rotatorOn = 0, intervalOn = 0;
     int nzPool[2] = {PT_CHORD, PT_SCALE};
     int ccVolcaChan = 0;
+    // v3: sequenze manuali dei Motif (in coda: gli stati v3+ si caricano anche se la struttura cresce)
+    ManualSeq man[2];
 };
 
 // ---------------------------------------------------------------- contenuti di fabbrica
@@ -237,6 +254,18 @@ inline void loadFactory(Config& c) {
     for (int i = 0; i < 20; ++i) fillRhythm(c.rhythms[i], rh[i]);
     c.rhythms[19].euclid = 1; c.rhythms[19].hits = 5; c.rhythms[19].rot = 0;
     for (int i = 20; i < 40; ++i) fillRhythm(c.rhythms[i], "x.x.x.x.");
+
+    // sequenze manuali di esempio (spente): M1 arpeggio con pause e tie, M2 linea di basso
+    {
+        const int v1[16] = {1,3,5,3, 4,0,6,5, 1,3,5,8, 7,0,5,3};
+        const int s1[16] = {1,1,1,1, 1,0,1,1, 1,1,1,1, 1,2,1,1};
+        for (int i = 0; i < kManSteps; ++i) {
+            c.man[0].st[i] = s1[i % 16]; c.man[0].val[i] = v1[i % 16] > 0 ? v1[i % 16] : 1; c.man[0].vel[i] = (i % 4 == 0) ? 120 : 90;
+            c.man[1].st[i] = (i % 4 == 0 || i % 8 == 6) ? MS_NOTE : (i % 4 == 1 ? MS_TIE : MS_REST);
+            c.man[1].val[i] = (i % 8 == 6) ? 3 : 1; c.man[1].vel[i] = 110;
+        }
+        c.man[0].len = 16; c.man[1].len = 16; c.man[1].type = PT_CHORD;
+    }
 
     c.lfo[0] = {1, 15, SH_SINE, 0, 100};
     c.lfo[1] = {1, 31, SH_TRI, 0, 100};

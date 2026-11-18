@@ -168,6 +168,33 @@ int main() {
         CHECK(c.rootPc == 4 && chordQuality(c) == 1, "riga con tonalita' propria: atteso E minore");
     }
 
+    // 7c. sequenza manuale del Motif 1: gradi dell'accordo che seguono i cambi di accordo, pause e tie
+    {
+        Engine e;
+        auto& ms = e.cfg.man[0];
+        ms.on = 1; ms.type = PT_CHORD; ms.len = 4;
+        int st[4] = {MS_NOTE, MS_TIE, MS_REST, MS_NOTE}, val[4] = {1, 1, 1, 3};
+        for (int i = 0; i < 4; ++i) { ms.st[i] = st[i]; ms.val[i] = val[i]; ms.vel[i] = 100; }
+        e.base.m[0].on = 1; e.base.m[0].div = 2; e.base.m[0].pos = 3; e.base.m[0].gate = 127;  // 1/4, legato
+        std::vector<MidiEv> out; std::vector<std::pair<int64_t, int>> ons; std::vector<int64_t> offs;
+        e.start(0, out); out.clear();
+        for (int64_t t = 0; t < 2 * 384; ++t) {
+            if (t == 384) e.base.degree = 3;      // seconda battuta: IV (F)
+            e.tick(t, out);
+            for (auto& ev : out) { if ((ev.b0 & 0xF0) == 0x90) ons.push_back({t, ev.b1}); else if ((ev.b0 & 0xF0) == 0x80) offs.push_back(t); }
+            out.clear();
+        }
+        // mappa NDLR, pos 3: in C valore 1 = C2(36), valore 3 = G2(43); in F (F A C): F2(41) e C2(36)
+        CHECK(ons.size() == 4, "manuale: 4 note attese, %zu", ons.size());
+        if (ons.size() == 4) {
+            CHECK(ons[0].first == 0 && ons[0].second == 36, "manuale step1");
+            CHECK(ons[1].first == 288 && ons[1].second == 43, "manuale step4");
+            CHECK(ons[2].first == 384 && ons[2].second == 41, "manuale segue l'accordo IV (F)");
+            CHECK(ons[3].first == 672 && ons[3].second == 36, "manuale step4 su F");
+        }
+        CHECK(!offs.empty() && offs[0] == 192, "il tie deve allungare la prima nota a 2 quarti (%lld)", offs.empty() ? -1LL : (long long) offs[0]);
+    }
+
     // 8. ingresso MIDI di controllo
     {
         Engine e;

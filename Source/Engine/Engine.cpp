@@ -235,7 +235,7 @@ void Engine::computeEffective() {
             int k = m.dst >= D_M2_STEP1 ? 1 : 0;
             int st = m.dst - (k ? D_M2_STEP1 : D_M1_STEP1);
             int pidx = eff.m[k].patt;
-            int baseVal = pidx >= kPatternNZ ? 1 : cfg.patterns[pidx].v[st];
+            int baseVal = cfg.man[k].on ? cfg.man[k].val[st] : pidx >= kPatternNZ ? 1 : cfg.patterns[pidx].v[st];
             int v = patt ? pv : (int) std::lround(baseVal + (bip ? u : u) * amt * (bip ? span * 0.5 : span));
             stepOverride[k][st] = std::clamp(v, di.lo, di.hi);
             continue;
@@ -464,6 +464,37 @@ void Engine::motifTick(int k, int64_t t, std::vector<MidiEv>& out) {
     const int stepT = stepTicksForDiv(m.div);
     const int64_t rel = t - r.startTick - off;
     if (rel < 0 || rel % stepT != 0) return;
+
+    if (cfg.man[k].on) {
+        // ---- sequenza manuale: gli step scritti a mano, sempre sui gradi dell'armonia corrente
+        const ManualSeq& ms = cfg.man[k];
+        const int len = std::clamp(ms.len, 1, kManSteps);
+        const int step = (int) (r.stepCount % len);
+        r.stepCount++;
+        r.lastBeat = step; r.lastIdx = step;
+        const int stt = ms.st[step];
+        if (stt != MS_NOTE) return;
+        int ties = 0;
+        for (int j = 1; j < len; ++j) { if (ms.st[(step + j) % len] == MS_TIE) ++ties; else break; }
+        const int full = stepT * (1 + ties);
+        const int gate = std::clamp(m.gate, 5, 127);
+        const int dur = gate >= 127 ? full : std::max(1, (int) std::lround(full * gate / 127.0));
+        const int value = (step < 16 && stepOverride[k][step] >= 0) ? stepOverride[k][step] : std::clamp(ms.val[step], 1, patTypeMax(ms.type));
+        const Chord c = chordFrom(eff);
+        const int note = noteForValue(value, ms.type, m.pos, c);
+        const int vel = motifVelocity(k, std::clamp(ms.vel[step], 1, 127), t);
+        if (r.hasNote) {
+            int pn = r.snd.note, pc = r.snd.ch;
+            pending.erase(std::remove_if(pending.begin(), pending.end(),
+                [part, pn, pc](const Pending& p) { return p.part == part && !p.on && p.note == pn && p.ch == pc; }), pending.end());
+            emitOff(part, r.snd.note, r.snd.ch, r.snd.mask, out);
+            r.hasNote = false;
+        }
+        emitOn(part, note, chan, mask, vel, out);
+        r.hasNote = true; r.snd = {note, chan, mask};
+        pending.push_back({t + dur, part, false, note, chan, mask, 0});
+        return;
+    }
 
     const int rlen = std::clamp(m.rlen, 4, 32);
     const int beat = (int) (r.stepCount % rlen);

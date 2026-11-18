@@ -26,6 +26,7 @@ int main(int argc, char** argv) {
     auto cfg = proc->getConfig();
     cfg.mods[0] = { ago::SRC_LFO1, ago::D_PAD_POS, 30, 1, 0 };
     cfg.mods[1] = { ago::SRC_LFO2, ago::D_PN_X, 60, 1, 0 };
+    cfg.man[0].on = 1;
     proc->setConfig(cfg);
 
     if (argc > 2 && juce::String(argv[2]) == "follower") { proc->setParam("linkRole", 2); proc->setParam("linkPart", 2); }
@@ -61,7 +62,7 @@ int main(int argc, char** argv) {
     juce::FileOutputStream fos { juce::File(shot) };
     juce::PNGImageFormat().writeImageToStream(img, fos);
 
-    for (int tab = 1; tab < 8; ++tab) {
+    for (int tab = 1; tab < 9; ++tab) {
         if (auto* ae = dynamic_cast<AgoEditor*>(ed.get())) ae->showTab(tab);
         run(blocksPerBar);
         juce::MessageManager::getInstance()->runDispatchLoopUntil(200);
