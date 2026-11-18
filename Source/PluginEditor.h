@@ -94,6 +94,7 @@ private:
     juce::OwnedArray<agoui::Knob> knobs[4];
     std::unique_ptr<juce::Component> motifView[2];
     std::unique_ptr<juce::Component> keyboard;
+    std::unique_ptr<juce::Component> followerOverlay;
 
     juce::TabbedComponent tabs { juce::TabbedButtonBar::TabsAtTop };
     juce::Array<agoui::Page*> pages;

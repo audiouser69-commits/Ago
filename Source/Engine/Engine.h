@@ -9,7 +9,8 @@
 
 namespace ago {
 
-struct MidiEv { int portMask; uint8_t b0, b1, b2; };
+// part: 0 pad, 1 drone, 2/3 motif, -1 CC da modulazione, 5 tastiera, 6 thru, 9 panic (vale per tutti)
+struct MidiEv { int portMask; uint8_t b0, b1, b2; int part = -1; };
 
 // Azione verso l'host: cambia un parametro (es. accordo scelto da tastiera MIDI)
 struct ParamAction { int dest; int value; };   // dest = D_* (interno); D_NONE+value speciali sotto

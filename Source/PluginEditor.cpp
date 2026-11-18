@@ -228,6 +228,52 @@ private:
     AgoEditor& ed; int m;
 };
 
+// =====================================================================================  overlay follower
+class FollowerOverlay : public juce::Component {
+public:
+    explicit FollowerOverlay(AgoEditor& e) : ed(e), role(e.proc, "linkRole"), group(e.proc, "linkGroup"), part(e.proc, "linkPart") {
+        for (auto* c : { &role, &group, &part }) addAndMakeVisible(c);
+    }
+    void paint(juce::Graphics& g) override {
+        g.fillAll(col::bg);
+        auto r = getLocalBounds().reduced(30, 20);
+        g.setColour(col::panel); g.fillRoundedRectangle(r.toFloat(), 10.0f);
+        r = r.reduced(30, 24);
+        g.setColour(col::text); g.setFont(juce::Font(26.0f, juce::Font::bold));
+        g.drawText("AGO FOLLOWER", r.removeFromTop(36), juce::Justification::centredLeft);
+        r.removeFromTop(50);
+        const int st = ed.proc.getLinkStatus();
+        juce::String status = st == 3 ? "Collegato al leader: segue accordi, tempo e sequencer."
+                            : st == 2 ? "C'e' gia' un leader in questo gruppo: questa istanza fa da follower."
+                            : st == 5 ? "In attesa del trasporto dell'host (premi Play in Live)."
+                            : "Nessun leader in questo gruppo: imposta Link = Leader su un'altra istanza di AGO.";
+        g.setColour(st == 3 || st == 2 ? col::m1 : col::mod);
+        g.setFont(juce::Font(15.0f, juce::Font::bold));
+        g.drawText(status, r.removeFromTop(26), juce::Justification::centredLeft);
+        r.removeFromTop(14);
+        g.setColour(col::text); g.setFont(14.0f);
+        g.drawFittedText(
+            "Questa istanza non genera note proprie: legge il motore del leader dello stesso gruppo e manda all'uscita MIDI "
+            "della traccia solo la parte scelta, a tempo e senza latenza.\n\n"
+            "In Ableton Live:\n"
+            "1.  Traccia 'AGO leader' con Link = Leader: accordi, parti, pattern e modulazioni si regolano li'.\n"
+            "2.  Una traccia per parte con AGO in Link = Follower (es. Pad, Motif 1...).\n"
+            "3.  Sulla traccia del synth (DeepMind, Pro-800, emulatore...): MIDI From = la traccia del follower, sotto scegli 'AGO'. "
+            "Monitor In, oppure arma per registrare le note in clip.\n\n"
+            "Le parti devono essere accese nel leader. Il canale MIDI lo decide la traccia del synth (Live unifica i canali).",
+            r, juce::Justification::topLeft, 20);
+    }
+    void resized() override {
+        auto r = getLocalBounds().reduced(60, 44).withTrimmedTop(46).removeFromTop(30);
+        role.setBounds(r.removeFromLeft(140)); r.removeFromLeft(10);
+        group.setBounds(r.removeFromLeft(140)); r.removeFromLeft(10);
+        part.setBounds(r.removeFromLeft(160));
+    }
+private:
+    AgoEditor& ed;
+    ParamCombo role, group, part;
+};
+
 // =====================================================================================  pagine
 namespace {
 
@@ -795,12 +841,17 @@ public:
         kbPort.onChange = [this] { ed.cfg.kbPort = kbPort.getSelectedId() - 1; ed.pushConfig(); };
         thru.onClick = [this] { ed.cfg.passThru = thru.getToggleState(); ed.pushConfig(); };
         delay.onValueChange = [this] { ed.proc.midiOutDelayMs = (int) delay.getValue(); };
+        linkRole = std::make_unique<ParamCombo>(e.proc, "linkRole");
+        linkGroup = std::make_unique<ParamCombo>(e.proc, "linkGroup");
+        linkPart = std::make_unique<ParamCombo>(e.proc, "linkPart");
+        for (auto* c : { linkRole.get(), linkGroup.get(), linkPart.get() }) addAndMakeVisible(c);
+        mkLabel(*this, labels, "Link (multi-traccia)", 11.0f, col::m1); mkLabel(*this, labels, "Gruppo", 11.0f); mkLabel(*this, labels, "Parte (follower)", 11.0f);
         addAndMakeVisible(knobs.add(new Knob(e.proc, "offset", "M2 Offset", col::m2)));
         addAndMakeVisible(knobs.add(new Knob(e.proc, "humanize", "Humanize", col::m1)));
         addAndMakeVisible(knobs.add(new Knob(e.proc, "velLow", "Vel Low", col::m1)));
-        auto* h = mkLabel(*this, labels, "In Ableton i VST3 non possono mandare MIDI ad altre tracce: scegli per ogni parte Port A/B con il dispositivo "
-            "(USB del DeepMind / Pro-800, interfaccia MIDI) o una porta virtuale loopMIDI. La porta va disattivata come uscita nelle preferenze MIDI di Live, "
-            "altrimenti Windows non la lascia aprire. 'Host' funziona in Bitwig, Reaper, FL e nello standalone.", 11.0f);
+        auto* h = mkLabel(*this, labels, "Live unisce su un solo canale il MIDI che esce da un plugin. Per separare le parti dentro Live usa LINK: "
+            "un AGO Leader + un AGO Follower per parte su tracce diverse (MIDI From = traccia del follower). In alternativa Port A/B apre "
+            "direttamente un dispositivo MIDI (USB del synth o loopMIDI) mantenendo i canali: la porta va disattivata come uscita nelle preferenze di Live.", 11.0f);
         h->setJustificationType(juce::Justification::topLeft);
         help = h;
         scanDevices();
@@ -861,6 +912,8 @@ public:
         rowL(2, ctrl); rowL(3, trans); rowL(4, kbMode); rowL(5, kbPort);
         thru.setBounds(right.removeFromTop(28));
         rowL(6, delay);
+        right.removeFromTop(6);
+        rowL(7, *linkRole); rowL(8, *linkGroup); rowL(9, *linkPart);
     }
 private:
     juce::ComboBox ch[4], port[4], dev[2], ctrl, trans, kbMode, kbPort;
@@ -872,6 +925,7 @@ private:
     juce::OwnedArray<juce::Label> labels, partLabels;
     juce::OwnedArray<Knob> knobs;
     juce::Label* help = nullptr;
+    std::unique_ptr<ParamCombo> linkRole, linkGroup, linkPart;
 };
 
 // ---------- Rotator / Interval
@@ -996,6 +1050,9 @@ AgoEditor::AgoEditor(AgoProcessor& p)
     tabs.setOutline(0);
     addAndMakeVisible(tabs);
 
+    followerOverlay = std::make_unique<FollowerOverlay>(*this);
+    addChildComponent(*followerOverlay);
+
     setSize(1200, 840);
     startTimerHz(25);
 }
@@ -1019,6 +1076,13 @@ void AgoEditor::timerCallback() {
         chordBtn[i].setToggleState(snap.eff.degree == i, juce::dontSendNotification);
         typeBtn[i].setToggleState(ctype == i, juce::dontSendNotification);
     }
+    const int ls = proc.getLinkStatus();
+    const bool follower = AgoProcessor::paramValue(proc.apvts, "linkRole") == 2 || ls == 2;
+    if (follower != followerOverlay->isVisible()) { followerOverlay->setVisible(follower); if (follower) followerOverlay->toFront(false); }
+    if (follower) followerOverlay->repaint();
+    for (auto* c : std::initializer_list<juce::Component*> { &keyBox, &modeBox, &invertBtn, &playBtn, &syncBox, &tempo, &playAllBtn, &resyncBtn })
+        c->setEnabled(!follower);
+    for (int i = 0; i < 7; ++i) { chordBtn[i].setEnabled(!follower); typeBtn[i].setEnabled(!follower); }
     keyboard->repaint();
     for (auto& v : motifView) v->repaint();
     if (auto* pg = dynamic_cast<agoui::Page*>(tabs.getCurrentContentComponent())) pg->tick();
@@ -1033,7 +1097,18 @@ void AgoEditor::paint(juce::Graphics& g) {
     g.setColour(col::text); g.setFont(juce::Font(30.0f, juce::Font::bold));
     g.drawText("AGO", h.removeFromLeft(90).withTrimmedLeft(14), juce::Justification::centredLeft);
     g.setColour(col::dim); g.setFont(11.0f);
-    g.drawText("harmonic conductor", h.removeFromLeft(130), juce::Justification::centredLeft);
+    {
+        auto sub = h.removeFromLeft(130);
+        const int ls = proc.getLinkStatus();
+        const int grp = AgoProcessor::paramValue(proc.apvts, "linkGroup") + 1;
+        static const char* partN[5] = {"PAD", "DRONE", "MOTIF 1", "MOTIF 2", "TUTTE"};
+        juce::String badge = ls == 1 ? "LINK LEADER  G" + juce::String(grp)
+                           : (ls == 2 || ls == 3 || ls == 4) ? "FOLLOWER G" + juce::String(grp) + "  " + partN[juce::jlimit(0, 4, AgoProcessor::paramValue(proc.apvts, "linkPart"))]
+                           : ls == 5 ? "LINK: serve l'host" : "harmonic conductor";
+        g.setColour(ls == 0 ? col::dim : (ls == 1 || ls == 3 || ls == 2) ? col::m1 : col::mod);
+        g.setFont(juce::Font(11.0f, ls == 0 ? juce::Font::plain : juce::Font::bold));
+        g.drawText(badge, sub, juce::Justification::centredLeft);
+    }
     // display accordo
     auto disp = juce::Rectangle<int>(536, 8, 336, 46);
     g.setColour(col::panel); g.fillRoundedRectangle(disp.toFloat(), 6.0f);
@@ -1093,6 +1168,7 @@ void AgoEditor::resized() {
     auto parts = r.removeFromTop(300).reduced(10, 4);
     layoutParts(parts);
     tabs.setBounds(r.reduced(10, 4));
+    if (followerOverlay) followerOverlay->setBounds(0, keyboard->getBottom() + 4, getWidth(), getHeight() - keyboard->getBottom() - 4);
 }
 
 void AgoEditor::layoutParts(juce::Rectangle<int> r) {

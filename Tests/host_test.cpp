@@ -28,6 +28,7 @@ int main(int argc, char** argv) {
     cfg.mods[1] = { ago::SRC_LFO2, ago::D_PN_X, 60, 1, 0 };
     proc->setConfig(cfg);
 
+    if (argc > 2 && juce::String(argv[2]) == "follower") { proc->setParam("linkRole", 2); proc->setParam("linkPart", 2); }
     std::unique_ptr<juce::AudioProcessorEditor> ed(proc->createEditor());
     ed->setVisible(true);
 

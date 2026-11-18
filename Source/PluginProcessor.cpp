@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "ParamTable.h"
+#include "LinkBus.h"
 
 using namespace ago;
 static_assert(std::is_trivially_copyable<Config>::value, "Config deve essere copiabile byte per byte");
@@ -22,6 +23,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout AgoProcessor::createLayout()
     layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID { "sync", 1 }, "Clock",
         juce::StringArray { "Host", "Internal", "MIDI Clock" }, 0));
     layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID { "play", 1 }, "Play (clock interno)", false));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID { "linkRole", 1 }, "Link",
+        juce::StringArray { "Off", "Leader", "Follower" }, 0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID { "linkGroup", 1 }, "Link Group",
+        juce::StringArray { "Gruppo 1", "Gruppo 2", "Gruppo 3", "Gruppo 4" }, 0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID { "linkPart", 1 }, "Link Part",
+        juce::StringArray { "Pad", "Drone", "Motif 1", "Motif 2", "Tutte" }, 0));
     return layout;
 }
 
@@ -37,7 +44,7 @@ AgoProcessor::AgoProcessor()
     startTimerHz(20);
 }
 
-AgoProcessor::~AgoProcessor() { stopTimer(); }
+AgoProcessor::~AgoProcessor() { stopTimer(); leaveBus(); }
 
 void AgoProcessor::prepareToPlay(double sampleRate, int) {
     sr = sampleRate;
@@ -60,6 +67,7 @@ void AgoProcessor::setConfig(const Config& c) {
         cfgPending = c;
     }
     cfgDirty = true;
+    ++localCfgSerial;
 }
 
 void AgoProcessor::playAll() {
@@ -130,13 +138,29 @@ void AgoProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuff
     readParams();
     outHost.clear(); outA.clear(); outB.clear();
 
+    juce::Optional<juce::AudioPlayHead::PositionInfo> pos;
+    if (auto* ph = getPlayHead()) pos = ph->getPosition();
+    const bool hostOk = pos.hasValue() && pos->getPpqPosition().hasValue() && pos->getBpm().hasValue();
+
+    // ---- modalita' Link (leader/follower con motore condiviso)
+    const int role = paramValue(apvts, "linkRole");
+    const int group = paramValue(apvts, "linkGroup");
+    if (role != lastLinkRole || group != lastLinkGroup) {
+        if (lastLinkRole != 0) leaveBus();
+        if (lastLinkRole == 0 && engine.isRunning()) { engine.stop(evs); routeEvents(0, n); hostWasPlaying = internalWasPlaying = false; }
+        lastLinkRole = role; lastLinkGroup = group;
+        myImmId = 0;
+    }
+    if (role != 0) {
+        processLinked(role, group, paramValue(apvts, "linkPart"), midi, n, pos, hostOk);
+        return;
+    }
+    linkStatus = 0;
+
     if (panicRequest.exchange(false)) { engine.panic(evs); routeEvents(0, n); }
     if (resyncRequest.exchange(false)) engine.resyncMotifs();
 
     int sync = paramValue(apvts, "sync");
-    juce::Optional<juce::AudioPlayHead::PositionInfo> pos;
-    if (auto* ph = getPlayHead()) pos = ph->getPosition();
-    const bool hostOk = pos.hasValue() && pos->getPpqPosition().hasValue() && pos->getBpm().hasValue();
     if (sync == 0 && !hostOk) sync = 1;    // standalone: clock interno
 
     // ---- ingresso MIDI (controllo, trasposizione, clock)
@@ -235,6 +259,128 @@ void AgoProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuff
         snapCounter = 0;
         const juce::SpinLock::ScopedTryLockType l(snapLock);
         if (l.isLocked()) engine.fillSnapshot(snap);
+    }
+}
+
+// ------------------------------------------------------------------ Link
+void AgoProcessor::leaveBus() {
+    for (int g = 0; g < 4; ++g) {
+        auto& bus = LinkBus::get(g);
+        const juce::SpinLock::ScopedLockType l(bus.lock);
+        if (bus.leader == this) {
+            std::vector<MidiEv> tmp;
+            bus.engine.stop(tmp);
+            bus.pushImmediate(tmp);
+            bus.leader = nullptr;
+            bus.running = false;
+            bus.buffer.clear();
+        }
+    }
+}
+
+void AgoProcessor::processLinked(int role, int group, int part, juce::MidiBuffer& midi, int n,
+                                 const juce::Optional<juce::AudioPlayHead::PositionInfo>& pos, bool hostOk) {
+    auto& bus = LinkBus::get(group);
+    const juce::SpinLock::ScopedLockType l(bus.lock);
+
+    bool isLeader = false;
+    if (role == 1) {
+        if (bus.leader == nullptr || bus.leader == this) { bus.leader = this; isLeader = true; }
+    }
+    if (isLeader) {
+        bus.engine.base = engine.base;
+        const int cs = localCfgSerial.load();
+        if (cs != bus.cfgSerial && !cfgDirty.load()) { bus.engine.cfg = engine.cfg; bus.cfgSerial = cs; }
+        if (panicRequest.exchange(false)) { bus.engine.panic(evs); bus.pushImmediate(evs); }
+        if (resyncRequest.exchange(false)) bus.engine.resyncMotifs();
+        // ingresso MIDI: controllo accordi, trasposizione, CC
+        for (const auto meta : midi) {
+            const auto m = meta.getMessage();
+            if (m.isMidiClock() || m.isMidiStart() || m.isMidiStop() || m.isMidiContinue() || m.isSysEx()) continue;
+            bus.engine.midiIn(m.getRawData(), m.getRawDataSize(), evs, actions);
+            routeEvents(meta.samplePosition, n);   // tastiera/thru escono dal leader
+            if (!actions.empty()) applyActions();
+        }
+    } else {
+        if (panicRequest.exchange(false))
+            for (int ch = 0; ch < 16; ++ch) { outHost.addEvent(juce::MidiMessage::allNotesOff(ch + 1), 0); outHost.addEvent(juce::MidiMessage::allSoundOff(ch + 1), 0); }
+        resyncRequest = false;
+    }
+
+    const bool haveLeader = bus.leader != nullptr;
+    linkStatus = !hostOk ? 5 : role == 1 ? (isLeader ? 1 : 2) : (haveLeader ? 3 : 4);
+
+    auto wanted = [&](const MidiEv& e) {
+        if (isLeader) return true;
+        if (e.part == 9) return true;                       // panic
+        if (e.part < 0 || e.part > 3) return false;         // CC/tastiera/thru solo dal leader
+        return part == 4 || e.part == part;
+    };
+    auto emit = [&](const MidiEv& e, int sample) {
+        const int st = e.b0 & 0xF0;
+        const int size = (st == 0xC0 || st == 0xD0) ? 2 : 3;
+        const uint8_t data[3] = { e.b0, e.b1, e.b2 };
+        sample = juce::jlimit(0, juce::jmax(0, n - 1), sample);
+        if (!isLeader) { outHost.addEvent(data, size, sample); return; }   // il follower esce sempre sull'host
+        if (e.portMask & 1) outHost.addEvent(data, size, sample);
+        if (e.portMask & 2) outA.addEvent(data, size, sample);
+        if (e.portMask & 4) outB.addEvent(data, size, sample);
+    };
+
+    if (hostOk && haveLeader) {
+        const double bpm = *pos->getBpm();
+        bus.engine.setTempo(bpm); shownTempo = bpm;
+        const bool playing = pos->getIsPlaying();
+        const double ppq0 = *pos->getPpqPosition();
+        const double spb = sr * 60.0 / bpm;
+        const double ppq1 = ppq0 + n / spb;
+        if (playing) {
+            const int64_t first = (int64_t) std::ceil(ppq0 * kTicksPerBeat - 1e-6);
+            const int64_t last = (int64_t) std::ceil(ppq1 * kTicksPerBeat - 1e-6);
+            const bool alreadyComputed = bus.running && first >= bus.rangeFrom && last <= bus.nextTick;
+            const bool continues = bus.running && std::llabs(first - bus.nextTick) <= 2;
+            if (!alreadyComputed && !continues) {
+                // primo avvio o salto (loop / riposizionamento)
+                bus.engine.start(first, evs);
+                bus.pushImmediate(evs);
+                bus.buffer.clear();
+                bus.running = true;
+                bus.nextTick = first;
+            }
+            if (!alreadyComputed) { bus.rangeFrom = std::min(first, bus.nextTick); bus.advanceTo(last, evs); }
+            // eventi immediati non ancora consegnati a questa istanza
+            for (auto& ie : bus.imm) if (ie.id > myImmId) { if (wanted(ie.ev)) emit(ie.ev, 0); }
+            if (!bus.imm.empty()) myImmId = bus.imm.back().id;
+            for (auto& te : bus.buffer)
+                if (te.tick >= first && te.tick < last && wanted(te.ev))
+                    emit(te.ev, (int) std::floor((te.tick / (double) kTicksPerBeat - ppq0) * spb));
+            bus.prune(first - 8 * kTicksPerBeat);
+        } else {
+            if (bus.running) { bus.engine.stop(evs); bus.pushImmediate(evs); bus.running = false; bus.buffer.clear(); }
+            for (auto& ie : bus.imm) if (ie.id > myImmId) { if (wanted(ie.ev)) emit(ie.ev, 0); }
+            if (!bus.imm.empty()) myImmId = bus.imm.back().id;
+        }
+        transportOn = playing;
+    } else {
+        for (auto& ie : bus.imm) if (ie.id > myImmId) { if (wanted(ie.ev)) emit(ie.ev, 0); }
+        if (!bus.imm.empty()) myImmId = bus.imm.back().id;
+        transportOn = false;
+    }
+
+    midi.swapWith(outHost);
+    if (isLeader && (!outA.isEmpty() || !outB.isEmpty())) {
+        const juce::ScopedTryLock pl(portLock);
+        if (pl.isLocked()) {
+            const double now = juce::Time::getMillisecondCounterHiRes() + midiOutDelayMs;
+            if (port[1] && !outA.isEmpty()) port[1]->sendBlockOfMessages(outA, now, sr);
+            if (port[2] && !outB.isEmpty()) port[2]->sendBlockOfMessages(outB, now, sr);
+        }
+    }
+    sampleCounter += n;
+    if (++snapCounter >= 3) {
+        snapCounter = 0;
+        const juce::SpinLock::ScopedTryLockType sl(snapLock);
+        if (sl.isLocked()) bus.engine.fillSnapshot(snap);
     }
 }
 

@@ -257,15 +257,13 @@ void Engine::sendCC(int ch, int mask, int cc, int val, std::vector<MidiEv>& out)
 
 // ------------------------------------------------------------------ note
 void Engine::emitOn(int part, int note, int ch, int mask, int vel, std::vector<MidiEv>& out) {
-    (void) part;
     if (silent || vel <= 0) return;
-    out.push_back({mask, (uint8_t) (0x90 | ((ch - 1) & 15)), (uint8_t) note, (uint8_t) std::clamp(vel, 1, 127)});
+    out.push_back({mask, (uint8_t) (0x90 | ((ch - 1) & 15)), (uint8_t) note, (uint8_t) std::clamp(vel, 1, 127), part});
 }
 
 void Engine::emitOff(int part, int note, int ch, int mask, std::vector<MidiEv>& out) {
-    (void) part;
     if (silent) return;
-    out.push_back({mask, (uint8_t) (0x80 | ((ch - 1) & 15)), (uint8_t) note, 64});
+    out.push_back({mask, (uint8_t) (0x80 | ((ch - 1) & 15)), (uint8_t) note, 64, part});
 }
 
 void Engine::allOff(std::vector<Sound>& snd, int part, std::vector<MidiEv>& out) {
@@ -555,12 +553,12 @@ void Engine::panic(std::vector<MidiEv>& out) {
     bool wasSilent = silent; silent = false;
     allOff(padSnd, P_PAD, tmp);
     allOff(droneSnd, P_DRONE, tmp);
-    for (auto& m : mrt) { if (m.hasNote) emitOff(0, m.snd.note, m.snd.ch, m.snd.mask, tmp); m.hasNote = false; }
+    for (int k = 0; k < 2; ++k) { auto& m = mrt[k]; if (m.hasNote) emitOff(P_M1 + k, m.snd.note, m.snd.ch, m.snd.mask, tmp); m.hasNote = false; }
     for (auto& p : pending) if (!p.on) emitOff(p.part, p.note, p.ch, p.mask, tmp);
     pending.clear();
     for (int ch = 0; ch < 16; ++ch) {
-        tmp.push_back({7, (uint8_t) (0xB0 | ch), 123, 0});
-        tmp.push_back({7, (uint8_t) (0xB0 | ch), 120, 0});
+        tmp.push_back({7, (uint8_t) (0xB0 | ch), 123, 0, 9});
+        tmp.push_back({7, (uint8_t) (0xB0 | ch), 120, 0, 9});
     }
     silent = wasSilent;
     out.insert(out.end(), tmp.begin(), tmp.end());
@@ -655,7 +653,7 @@ void Engine::keyboardNote(bool on, int note, int vel, std::vector<MidiEv>& out) 
     const Chord c = chordFrom(eff);
     auto send = [&](bool o, int n, int v) {
         n = std::clamp(n, 0, 127);
-        out.push_back({mask, (uint8_t) ((o ? 0x90 : 0x80) | ((ch - 1) & 15)), (uint8_t) n, (uint8_t) (o ? std::clamp(v, 1, 127) : 64)});
+        out.push_back({mask, (uint8_t) ((o ? 0x90 : 0x80) | ((ch - 1) & 15)), (uint8_t) n, (uint8_t) (o ? std::clamp(v, 1, 127) : 64), 5});
     };
     if (!on) {
         for (int n : kbOut[note]) send(false, n, 0);
@@ -858,7 +856,7 @@ void Engine::midiIn(const uint8_t* d, int len, std::vector<MidiEv>& out, std::ve
 
     // altri canali: MIDI thru verso l'host
     if (cfg.passThru && st != 0xF0 && len <= 3)
-        out.push_back({1, d[0], (uint8_t) d1, (uint8_t) d2});
+        out.push_back({1, d[0], (uint8_t) d1, (uint8_t) d2, 6});
 }
 
 // ------------------------------------------------------------------ UI

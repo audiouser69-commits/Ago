@@ -45,6 +45,8 @@ public:
     void requestResync() { resyncRequest = true; }
     void playAll();
     double getCurrentTempo() const { return shownTempo.load(); }
+    // 0 off, 1 leader, 2 leader doppio (fa da follower), 3 follower collegato, 4 follower senza leader, 5 manca il trasporto host
+    int getLinkStatus() const { return linkStatus.load(); }
     bool isTransportRunning() const { return transportOn.load(); }
 
     static int paramValue(juce::AudioProcessorValueTreeState& s, const char* id);
@@ -58,6 +60,9 @@ private:
     void routeEvents(int sample, int numSamples);
     void timerCallback() override;
     void openPorts();
+    void processLinked(int role, int group, int part, juce::MidiBuffer& midi, int n,
+                       const juce::Optional<juce::AudioPlayHead::PositionInfo>& pos, bool hostOk);
+    void leaveBus();
 
     ago::Engine engine;
     ago::Config cfgMaster, cfgPending;
@@ -79,6 +84,11 @@ private:
     std::atomic<double> shownTempo { 120.0 };
     std::atomic<bool> transportOn { false };
     std::atomic<bool> panicRequest { false }, resyncRequest { false }, portsDirty { false };
+    std::atomic<int> linkStatus { 0 };
+    int lastLinkRole = 0, lastLinkGroup = 0;
+    uint64_t myImmId = 0;
+    int publishedCfgSerial = 0;
+    std::atomic<int> localCfgSerial { 1 };
 
     std::vector<ago::MidiEv> evs;
     std::vector<ago::ParamAction> actions;

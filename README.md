@@ -20,12 +20,24 @@ Cambi accordo con i 7 tasti I–VII e i 7 tipi (Triad, 7th, sus2, alt2, alt1, su
 
 ## Uso in Ableton Live (importante)
 
-Live **non inoltra il MIDI in uscita dai VST3** ad altre tracce. Per questo ogni parte può uscire su:
+Live fa passare il MIDI in uscita da un plugin verso un'altra traccia (MIDI From = traccia del plugin). Però **unisce tutto su un solo canale**, quindi da una sola istanza le parti non si separano. Ci sono due soluzioni.
 
-- **Host**: uscita MIDI del plugin. Funziona in Bitwig, Reaper, FL Studio e nello standalone.
-- **Port A / Port B**: un dispositivo MIDI di Windows, aperto direttamente dal plugin. Si sceglie nella tab *MIDI / PORTE*.
+### 1. LINK: un AGO per parte, tutto dentro Live (consigliato)
 
-Setup tipico:
+- Traccia **AGO leader**: tab *MIDI / PORTE* → Link = **Leader**. Qui si suona: accordi, parti, pattern, modulazioni, sequencer.
+- Una traccia per parte con un altro AGO: Link = **Follower**, Parte = Pad / Drone / Motif 1 / Motif 2 (o Tutte), stesso Gruppo del leader.
+- Sulla traccia di ogni synth (DeepMind, Pro-800, emulatore, FM-1...): **MIDI From** = traccia del follower, sotto scegli "AGO". Poi Monitor **In**, oppure arma la traccia per registrare le note in clip.
+
+Tutte le istanze di un gruppo usano **lo stesso motore**: i follower ricevono le note esatte del leader, sullo stesso campione, anche con le parti casuali (Random, probabilità degli LFO, Humanize). Ci sono 4 gruppi per avere più AGO indipendenti. I follower mostrano accordo e tastiera del leader. Se il leader viene rimosso, i follower spengono le note.
+
+### 2. Porte A/B: dispositivi MIDI diretti
+
+Ogni parte può uscire anche su:
+
+- **Host**: uscita MIDI del plugin (Bitwig, Reaper, FL Studio, standalone, oppure il leader in Live).
+- **Port A / Port B**: un dispositivo MIDI di Windows aperto direttamente dal plugin, con i canali separati. Si sceglie nella tab *MIDI / PORTE*.
+
+Setup tipico con le porte:
 
 - Metti AGO su una traccia MIDI (anche vuota) e premi Play in Live. AGO segue il trasporto e il tempo di Live.
 - **Port A** = USB del DeepMind 12, Pad su canale 1. **Port B** = Pro-800, Motif 1 su canale 1.
@@ -64,4 +76,4 @@ Clock CV in/out, MIDI Clock in uscita, la schermata "MIDI Controller" (mixer vol
 GitHub Actions compila a ogni push su `main`: prima i test del motore, poi Windows (MinGW, VST3 + standalone) e macOS.
 In locale: `cmake -S . -B build && cmake --build build`.
 `Tests/engine_test.cpp` verifica teoria, tabella note del manuale, variazioni, euclideo, pad, sequencer e assenza di note appese.
-`-DAGO_HOST_TEST=ON` compila un host di prova che simula il trasporto e salva screenshot della UI.
+`-DAGO_HOST_TEST=ON` compila un host di prova, che simula il trasporto e salva screenshot della UI, e `ago_link_test`. Quest'ultimo carica 1 leader e 5 follower processati in ordine casuale, con loop e stop, poi verifica che ogni follower emetta esattamente le note del leader per la sua parte.
