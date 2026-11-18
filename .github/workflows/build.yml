@@ -1,0 +1,108 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test del motore
+        working-directory: Tests
+        run: |
+          g++ -O2 -std=c++17 -Wall -I../Source engine_test.cpp ../Source/Engine/Engine.cpp -o engine_test && ./engine_test
+
+  windows:
+    # cross-compilazione con MinGW-w64 (mingw-toolchain.cmake)
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Strumenti
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ninja-build g++-mingw-w64-x86-64-posix libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libfreetype-dev
+      - name: Compila
+        run: |
+          cmake -S . -B build-win -G Ninja -DCMAKE_TOOLCHAIN_FILE=$PWD/mingw-toolchain.cmake -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-win -j3
+      - name: Impacchetta
+        run: |
+          OUT=dist/AGO-Windows
+          mkdir -p "$OUT"
+          cp -R build-win/AGO_artefacts/Release/VST3/AGO.vst3 "$OUT/"
+          cp build-win/AGO_artefacts/Release/Standalone/AGO.exe "$OUT/"
+          x86_64-w64-mingw32-strip "$OUT/AGO.exe" "$OUT/AGO.vst3/Contents/x86_64-win/AGO.vst3"
+          cp README.md "$OUT/LEGGIMI.txt"
+          cd dist && zip -qr AGO-Windows.zip AGO-Windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AGO-Windows
+          path: dist/AGO-Windows.zip
+
+  macos:
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configura (universale arm64 + x86_64)
+        run: |
+          cmake -S . -B build -G Xcode \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+      - name: Compila
+        run: cmake --build build --config Release -- -quiet
+      - name: Firma ad-hoc e impacchetta
+        run: |
+          OUT=dist/AGO-macOS
+          mkdir -p "$OUT"
+          cp -R build/AGO_artefacts/Release/VST3/AGO.vst3 "$OUT/"
+          cp -R build/AGO_artefacts/Release/Standalone/AGO.app "$OUT/"
+          codesign --force --deep --sign - "$OUT/AGO.vst3"
+          codesign --force --deep --sign - "$OUT/AGO.app"
+          cp README.md "$OUT/LEGGIMI.md"
+          cd dist && ditto -c -k --keepParent AGO-macOS AGO-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AGO-macOS
+          path: dist/AGO-macOS.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/AGO-Windows/AGO-Windows.zip
+            dist/AGO-macOS/AGO-macOS.zip
+
+  pacchetti:
+    # gli zip dell'ultimo push su main anche nel ramo "pacchetti" (scaricabili senza login)
+    if: github.ref == 'refs/heads/main'
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Pubblica nel ramo pacchetti
+        run: |
+          mkdir pub && cd pub
+          git init -q -b pacchetti
+          cp ../dist/AGO-Windows/AGO-Windows.zip ../dist/AGO-macOS/AGO-macOS.zip .
+          printf 'AGO: pacchetti della build %s (%s).\n' "${GITHUB_SHA::7}" "$(date -u +%F)" > LEGGIMI.txt
+          git add . && git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com commit -qm "Pacchetti della build ${GITHUB_SHA::7}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" pacchetti
